@@ -1,0 +1,7 @@
+# Pip install — works on Windows/Linux/macOS with recent Python.
+# If pythonocc-core fails to install via pip, use environment.yml (conda) instead.
+pythonocc-core==7.7.2
+PyQt5>=5.15
+matplotlib>=3.7
+ezdxf>=1.1
+numpy>=1.24

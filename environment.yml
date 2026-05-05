@@ -1,0 +1,14 @@
+# Recommended install path: conda. pythonocc-core ships reliable binaries here.
+#   conda env create -f environment.yml
+#   conda activate view-step
+#   python main.py
+name: view-step
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pythonocc-core=7.7.2
+  - pyqt=5
+  - matplotlib
+  - ezdxf
+  - numpy

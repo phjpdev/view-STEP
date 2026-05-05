@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+*.step
+*.stp
+*.svg
+*.dxf
+*.png
+.idea/
+.vscode/
