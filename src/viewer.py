@@ -169,6 +169,12 @@ class StepViewer(QMainWindow):
         self.labels_act.triggered.connect(self._redraw)
         tb.addAction(self.labels_act)
 
+        self.flipy_act = QAction("Flip Y", self, checkable=True)
+        self.flipy_act.setChecked(True)
+        self.flipy_act.setToolTip("Invert the vertical axis (fixes upside-down floor plans)")
+        self.flipy_act.triggered.connect(self._redraw)
+        tb.addAction(self.flipy_act)
+
         tb.addSeparator()
         for fmt, label in (("svg", "Export SVG"), ("dxf", "Export DXF"), ("png", "Export PNG")):
             act = QAction(label, self)
@@ -267,6 +273,9 @@ class StepViewer(QMainWindow):
 
         if autoscale or prev_xlim == (0.0, 1.0):
             self.ax.autoscale_view()
+            if self.flipy_act.isChecked():
+                lo, hi = self.ax.get_ylim()
+                self.ax.set_ylim(hi, lo)
         else:
             self.ax.set_xlim(prev_xlim)
             self.ax.set_ylim(prev_ylim)
