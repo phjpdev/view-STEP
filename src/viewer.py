@@ -7,6 +7,7 @@ auto-derived from the model's bounding box.
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import traceback
@@ -36,14 +37,14 @@ from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
 from .exporter import export_dxf, export_svg
-from .loader import load_step, shape_diagonal
-from .projector import VIEWS, edges_to_polylines, project
+from .loader import load_step, load_step_labels, shape_diagonal
+from .projector import VIEWS, edges_to_polylines, project, project_point
 
 Polyline = List
 
 
 class _LoaderThread(QThread):
-    done = pyqtSignal(object, float)  # shape, diagonal
+    done = pyqtSignal(object, float, list)  # shape, diagonal, components
     failed = pyqtSignal(str)
     info = pyqtSignal(str)
 
@@ -55,7 +56,9 @@ class _LoaderThread(QThread):
         try:
             shape = load_step(self.path, progress=self.info.emit)
             diag = shape_diagonal(shape)
-            self.done.emit(shape, diag)
+            self.info.emit("Reading component names...")
+            components = load_step_labels(self.path)
+            self.done.emit(shape, diag, components)
         except Exception as e:
             self.failed.emit(f"{e}\n\n{traceback.format_exc()}")
 
@@ -94,6 +97,7 @@ class StepViewer(QMainWindow):
         self.diagonal: float = 0.0
         self.visible_pl: List = []
         self.hidden_pl: List = []
+        self._components: list = []   # [(name, (cx,cy,cz)), ...]
         self._loader: Optional[_LoaderThread] = None
         self._projector: Optional[_ProjectThread] = None
 
@@ -153,6 +157,18 @@ class StepViewer(QMainWindow):
         self.hidden_act.triggered.connect(self._redraw)
         tb.addAction(self.hidden_act)
 
+        self.annot_act = QAction("Dimensions", self, checkable=True)
+        self.annot_act.setChecked(False)
+        self.annot_act.setToolTip("Show overall W×H dimension lines and a scale bar")
+        self.annot_act.triggered.connect(self._redraw)
+        tb.addAction(self.annot_act)
+
+        self.labels_act = QAction("Labels", self, checkable=True)
+        self.labels_act.setChecked(False)
+        self.labels_act.setToolTip("Show component names from the STEP assembly tree")
+        self.labels_act.triggered.connect(self._redraw)
+        tb.addAction(self.labels_act)
+
         tb.addSeparator()
         for fmt, label in (("svg", "Export SVG"), ("dxf", "Export DXF"), ("png", "Export PNG")):
             act = QAction(label, self)
@@ -185,16 +201,18 @@ class StepViewer(QMainWindow):
         self._loader.done.connect(self._on_loaded)
         self._loader.start()
 
-    def _on_loaded(self, shape, diagonal: float):
+    def _on_loaded(self, shape, diagonal: float, components: list):
         self.shape = shape
         self.diagonal = diagonal
-        # Auto-deflection: 0.1% of bbox diagonal — good default for visualization.
+        self._components = components
         defl = max(diagonal * 0.001, 1e-4)
         self.defl_spin.blockSignals(True)
         self.defl_spin.setValue(defl)
         self.defl_spin.blockSignals(False)
+        n_labels = len(components)
+        label_info = f", {n_labels} named component(s)" if n_labels else ""
         self.statusBar().showMessage(
-            f"Loaded. Bounding-box diagonal = {diagonal:.2f}, deflection = {defl:.4f}"
+            f"Loaded. Bounding-box diagonal = {diagonal:.2f}{label_info}, deflection = {defl:.4f}"
         )
         self._reproject()
 
@@ -253,7 +271,112 @@ class StepViewer(QMainWindow):
             self.ax.set_xlim(prev_xlim)
             self.ax.set_ylim(prev_ylim)
 
+        if self.annot_act.isChecked():
+            self._draw_dimensions()
+
+        if self.labels_act.isChecked():
+            self._draw_labels()
+
         self.canvas.draw_idle()
+
+    def _draw_dimensions(self):
+        """Overlay overall W×H dimension arrows and a scale bar in model units (mm)."""
+        if not self.visible_pl:
+            return
+
+        all_pts = [p for poly in self.visible_pl for p in poly]
+        xs = [p[0] for p in all_pts]
+        ys = [p[1] for p in all_pts]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        W = xmax - xmin
+        H = ymax - ymin
+        if W == 0 or H == 0:
+            return
+
+        pad = max(W, H) * 0.10
+        blue = "#0055aa"
+
+        # Width dimension (below the drawing)
+        dy = ymin - pad * 0.9
+        self.ax.annotate(
+            "", xy=(xmax, dy), xytext=(xmin, dy),
+            arrowprops=dict(arrowstyle="<->", color=blue, lw=1.4, mutation_scale=14),
+        )
+        for tx in (xmin, xmax):
+            self.ax.plot([tx, tx], [dy - H * 0.012, dy + H * 0.012], color=blue, lw=1.2)
+        w_label = f"W = {W:.0f} mm" if W < 10_000 else f"W = {W / 1000:.2f} m"
+        self.ax.text(
+            (xmin + xmax) / 2, dy - H * 0.025, w_label,
+            ha="center", va="top", fontsize=9, color=blue, fontweight="bold",
+        )
+
+        # Height dimension (right of the drawing)
+        dx = xmax + pad * 0.9
+        self.ax.annotate(
+            "", xy=(dx, ymax), xytext=(dx, ymin),
+            arrowprops=dict(arrowstyle="<->", color=blue, lw=1.4, mutation_scale=14),
+        )
+        for ty in (ymin, ymax):
+            self.ax.plot([dx - W * 0.012, dx + W * 0.012], [ty, ty], color=blue, lw=1.2)
+        h_label = f"H = {H:.0f} mm" if H < 10_000 else f"H = {H / 1000:.2f} m"
+        self.ax.text(
+            dx + W * 0.025, (ymin + ymax) / 2, h_label,
+            ha="left", va="center", fontsize=9, color=blue, fontweight="bold",
+            rotation=90,
+        )
+
+        # Scale bar (bottom-left corner)
+        raw = W * 0.15
+        mag = 10 ** math.floor(math.log10(raw))
+        scale_len = round(raw / mag) * mag
+        scale_label = f"{scale_len:.0f} mm" if scale_len < 1000 else f"{scale_len / 1000:.1f} m"
+        bar_y = ymin - pad * 2.0
+        bx0, bx1 = xmin, xmin + scale_len
+        tick_h = H * 0.012
+        self.ax.plot([bx0, bx1], [bar_y, bar_y], color="black", lw=3)
+        for bx in (bx0, bx1):
+            self.ax.plot([bx, bx], [bar_y - tick_h, bar_y + tick_h], color="black", lw=2)
+        self.ax.text(
+            (bx0 + bx1) / 2, bar_y - tick_h * 1.5, scale_label,
+            ha="center", va="top", fontsize=8,
+        )
+
+        # Expand axes so annotations are not clipped
+        xl = list(self.ax.get_xlim())
+        yl = list(self.ax.get_ylim())
+        xl[1] = max(xl[1], dx + W * 0.15)
+        yl[0] = min(yl[0], bar_y - H * 0.06)
+        self.ax.set_xlim(xl)
+        self.ax.set_ylim(yl)
+
+    def _draw_labels(self):
+        """Overlay component names from the STEP assembly tree at their projected centres."""
+        if not self._components:
+            self.statusBar().showMessage(
+                "No named components found in this STEP file — Labels has nothing to show."
+            )
+            return
+
+        view = self.view_combo.currentText()
+        seen: set = set()
+        for name, (cx, cy, cz) in self._components:
+            if name in seen:
+                continue
+            seen.add(name)
+            try:
+                x2d, y2d = project_point(cx, cy, cz, view)
+                self.ax.text(
+                    x2d, y2d, name,
+                    ha="center", va="center", fontsize=7, color="#990000",
+                    bbox=dict(
+                        boxstyle="round,pad=0.25", facecolor="white",
+                        alpha=0.75, edgecolor="#cccccc", linewidth=0.6,
+                    ),
+                    clip_on=True,
+                )
+            except Exception:
+                pass
 
     # ---- export ----
 

@@ -105,6 +105,20 @@ def _merge(a: Optional[TopoDS_Compound], b: Optional[TopoDS_Compound]) -> Option
     return comp
 
 
+def project_point(x: float, y: float, z: float, view: str) -> Tuple[float, float]:
+    """Orthographic projection of a 3D point to 2D, matching the HLR view.
+
+    The 2D axes are: X = Ax2.XDirection, Y = eye × XDirection (right-hand).
+    """
+    eye, x_ref = VIEWS[view]
+    xx, xy, xz = x_ref.X(), x_ref.Y(), x_ref.Z()
+    ex, ey, ez = eye.X(), eye.Y(), eye.Z()
+    yx = ey * xz - ez * xy
+    yy = ez * xx - ex * xz
+    yz = ex * xy - ey * xx
+    return x * xx + y * xy + z * xz, x * yx + y * yy + z * yz
+
+
 def edges_to_polylines(
     compound: Optional[TopoDS_Compound],
     deflection: float,
